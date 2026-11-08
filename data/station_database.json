@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "lastSaved": 1794127998797,
+  "adminPin": "2006",
+  "stations": [
+    {
+      "id": "station-msd",
+      "name": "Maa Sumitra Devi F.S.",
+      "promosEnabled": true,
+      "promoIntervalType": "time_interval",
+      "promoSongInterval": 2,
+      "promoTimeIntervalMinutes": 1,
+      "promoRepetitions": 2,
+      "activeCategoryFilter": "all",
+      "duckingMode": "db",
+      "duckingDb": -25,
+      "duckingVolumePercent": 18,
+      "fadeDurationSeconds": 1,
+      "crossfadeSeconds": 1.5,
+      "stationPin": "2006",
+      "pinRequired": false,
+      "allowedSources": "all"
+    }
+  ],
+  "categories": [
+    {
+      "id": "cat-xp95",
+      "name": "XP95 Petrol",
+      "description": "XP95 High Octane Fuel Promotion",
+      "color": "#f37021"
+    },
+    {
+      "id": "cat-servo",
+      "name": "SERVO 4T Oil",
+      "description": "SERVO Engine Lubricants Promotion",
+      "color": "#004b87"
+    },
+    {
+      "id": "cat-safety",
+      "name": "Safety Norms",
+      "description": "Forecourt Safety Rules",
+      "color": "#dc2626"
+    },
+    {
+      "id": "cat-rewards",
+      "name": "XTRAREWARDS",
+      "description": "IndianOil Rewards & Loyalty App",
+      "color": "#16a34a"
+    },
+    {
+      "id": "cat-services",
+      "name": "Pump Facilities",
+      "description": "Free Air, Water & Clean Toilets",
+      "color": "#8b5cf6"
+    }
+  ],
+  "promos": [
+    {
+      "id": "promo-1",
+      "title": "XP95 High Octane Promotion",
+      "categoryId": "cat-xp95",
+      "audioUrl": "https://cdn.freesound.org/previews/320/320655_5260872-lq.mp3",
+      "duration": 15,
+      "enabled": false,
+      "playsCount": 0,
+      "scriptSnippet": "Engine ko dein behtareen mileage aur instant pickup with IndianOil XP95 Petrol!",
+      "isCloudSaved": true,
+      "storageType": "preset",
+      "uploadedAt": 1792339094661
+    },
+    {
+      "id": "promo-2",
+      "title": "SERVO 4T Engine Oil Offer",
+      "categoryId": "cat-servo",
+      "audioUrl": "https://cdn.freesound.org/previews/320/320655_5260872-lq.mp3",
+      "duration": 18,
+      "enabled": false,
+      "playsCount": 0,
+      "scriptSnippet": "Engine ki lambi umar aur smooth ride ke liye chunein SERVO 4T Engine Oil.",
+      "isCloudSaved": true,
+      "storageType": "preset",
+      "uploadedAt": 1792339094661
+    },
+    {
+      "id": "promo-3",
+      "title": "Forecourt Safety - Switch Off Engine",
+      "categoryId": "cat-safety",
+      "audioUrl": "https://cdn.freesound.org/previews/320/320655_5260872-lq.mp3",
+      "duration": 12,
+      "enabled": false,
+      "playsCount": 0,
+      "scriptSnippet": "Fuel bharwate samay gaadi ka engine aur mobile phone switch off rakhein.",
+      "isCloudSaved": true,
+      "storageType": "preset",
+      "uploadedAt": 1792339094661
+    },
+    {
+      "id": "promo-4",
+      "title": "XTRAREWARDS App Loyalty Points",
+      "categoryId": "cat-rewards",
+      "audioUrl": "https://cdn.freesound.org/previews/320/320655_5260872-lq.mp3",
+      "duration": 14,
+      "enabled": false,
+      "playsCount": 0,
+      "scriptSnippet": "Har petrol diesel refill par paiye points aur redeem kijiye attractive discounts!",
+      "isCloudSaved": true,
+      "storageType": "preset",
+      "uploadedAt": 1792339094661
+    }
+  ],
+  "settings": {
+    "promoIntervalType": "time_interval",
+    "promoSongInterval": 2,
+    "promoTimeIntervalMinutes": 1,
+    "promoRepetitions": 2,
+    "activeCategoryFilter": "all",
+    "duckingMode": "db",
+    "duckingDb": -25,
+    "duckingVolumePercent": 18,
+    "fadeDurationSeconds": 1,
+    "crossfadeSeconds": 1.5,
+    "promosEnabled": true,
+    "autoMixEnabled": true,
+    "moodMixEnabled": false,
+    "detectedMood": "📻 Golden Era & 90s Classics",
+    "loopMode": "none",
+    "isShuffleEnabled": false
+  },
+  "likedTracks": {}
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Sangeet",
+  "description": "Sangeet - Petrol Pump Forecourt Radio and Smart Promo Broadcaster",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
