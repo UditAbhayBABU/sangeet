@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { SongTrack, PromoClip, PromoCategory, StationState, StationSettings, StationItem } from './types';
 import { audioEngine } from './services/audioEngine';
+import { mediaSessionService } from './services/mediaSessionService';
 import { HeaderNav } from './components/HeaderNav';
 import { ExpandedPlayer } from './components/ExpandedPlayer';
 import { AdminConsoleView } from './components/AdminConsoleView';
@@ -122,12 +123,15 @@ export default function App() {
   const wasSpeakerRef = useRef<boolean | null>(null);
 
   // Determine if THIS device is the designated speaker phone
-  // If no other devices connected or this is the only active device, auto-enable speaker mode so audio plays locally!
+  // If an active speaker is explicitly set on station, ONLY that device is the speaker!
+  // If no speaker has been chosen yet, single device defaults to speaker.
+  const activeSpeakerId = stationState?.speaker?.activeDeviceId;
   const connectedCount = stationState?.connectedDevices?.length || 0;
   const isSingleDevice = connectedCount <= 1;
   const isSpeakerNode = Boolean(
-    (stationState?.speaker?.activeDeviceId && stationState.speaker.activeDeviceId === myDeviceId) ||
-    isSingleDevice
+    activeSpeakerId
+      ? activeSpeakerId === myDeviceId
+      : isSingleDevice
   );
 
   // Check if there is an incoming handover request targeting this speaker device
@@ -539,6 +543,74 @@ export default function App() {
     };
   }, [playNextResolvedTrack, stationState?.playbackState?.isPlaying]);
 
+  // Register Lockscreen & Notification Media Controls via MediaSession API
+  useEffect(() => {
+    mediaSessionService.setCallbacks({
+      onPlay: () => {
+        if (isSpeakerNode) {
+          audioEngine.resumeMusic();
+        }
+        dispatchAction('UPDATE_PLAYBACK', { isPlaying: true });
+      },
+      onPause: () => {
+        if (isSpeakerNode) {
+          audioEngine.pauseMusic();
+        }
+        dispatchAction('UPDATE_PLAYBACK', { isPlaying: false });
+      },
+      onNext: () => {
+        playNextResolvedTrack();
+      },
+      onPrevious: () => {
+        const cur = audioEngine.getCurrentTime();
+        if (cur > 4) {
+          audioEngine.seekMusic(0);
+          dispatchAction('UPDATE_PLAYBACK', { currentTime: 0 });
+        } else {
+          audioEngine.seekMusic(0);
+          dispatchAction('UPDATE_PLAYBACK', { currentTime: 0 });
+        }
+      },
+      onSeek: (timeSec) => {
+        audioEngine.seekMusic(timeSec);
+        dispatchAction('UPDATE_PLAYBACK', { currentTime: timeSec });
+      },
+      onStop: () => {
+        audioEngine.stopAll();
+        dispatchAction('UPDATE_PLAYBACK', { isPlaying: false });
+      },
+    });
+  }, [isSpeakerNode, playNextResolvedTrack, dispatchAction]);
+
+  // Synchronize Track Metadata with Lockscreen & Notification Shade
+  useEffect(() => {
+    if (!stationState) return;
+
+    if (stationState.isPromoPlaying && stationState.activePromoClip) {
+      mediaSessionService.updatePromoMetadata(stationState.activePromoClip, stationState.stationName);
+    } else {
+      mediaSessionService.updateTrackMetadata(stationState.currentTrack, stationState.stationName);
+    }
+  }, [
+    stationState?.currentTrack,
+    stationState?.stationName,
+    stationState?.isPromoPlaying,
+    stationState?.activePromoClip,
+  ]);
+
+  // Synchronize Playback State with Lockscreen & Notification Shade
+  useEffect(() => {
+    const isPlaying = Boolean(stationState?.playbackState?.isPlaying);
+    mediaSessionService.setPlaybackState(isPlaying);
+  }, [stationState?.playbackState?.isPlaying]);
+
+  // Synchronize Scrubber Position State with Lockscreen
+  useEffect(() => {
+    if (duration > 0 && currentTime >= 0) {
+      mediaSessionService.updatePositionState(currentTime, duration);
+    }
+  }, [currentTime, duration]);
+
   // Sync Audio Playback ON SPEAKER NODE ONLY
   useEffect(() => {
     if (!stationState) return;
@@ -866,7 +938,9 @@ export default function App() {
   };
 
   const handleAddTrack = (track: SongTrack) => {
-    audioEngine.resumeContext();
+    if (isSpeakerNode) {
+      audioEngine.resumeContext();
+    }
     const isAdmin = userRole === 'admin';
     dispatchAction('ADD_TO_QUEUE', {
       track,
@@ -879,7 +953,9 @@ export default function App() {
   };
 
   const handlePlayNext = (track: SongTrack) => {
-    audioEngine.resumeContext();
+    if (isSpeakerNode) {
+      audioEngine.resumeContext();
+    }
     const isAdmin = userRole === 'admin';
     dispatchAction('PLAY_NEXT', {
       track,
@@ -912,7 +988,9 @@ export default function App() {
   };
 
   const handlePlayTrackNow = (track: SongTrack) => {
-    audioEngine.resumeContext();
+    if (isSpeakerNode) {
+      audioEngine.resumeContext();
+    }
     const isAdmin = userRole === 'admin';
 
     // Tier 1: Administrator (Can play anything immediately)

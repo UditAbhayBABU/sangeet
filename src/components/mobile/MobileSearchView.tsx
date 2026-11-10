@@ -19,8 +19,10 @@ import {
   Radio,
   ArrowRight,
   Heart,
+  ListMusic,
 } from 'lucide-react';
-import { SongTrack } from '../../types';
+import { SongTrack, CommunityPlaylist } from '../../types';
+import { MobileCommunityPlaylistModal } from './MobileCommunityPlaylistModal';
 
 interface MobileSearchViewProps {
   onPlayTrackNow: (track: SongTrack) => void;
@@ -102,7 +104,7 @@ const YT_BROWSE_CATEGORIES = [
   },
 ];
 
-const SEARCH_FILTER_PILLS = ['All', 'Songs', 'Artists', 'Albums'];
+const SEARCH_FILTER_PILLS = ['All', 'Songs', 'Artists', 'Albums', 'Playlists'];
 
 // Client-side Title Normalizer to ensure zero repetitive audio clutter
 function getNormalizedSignature(title: string): string {
@@ -168,6 +170,13 @@ export const MobileSearchView: React.FC<MobileSearchViewProps> = ({
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [activeFilter, setActiveFilter] = useState('All');
 
+  // Community Playlists State (YouTube Community Playlists Mirror)
+  const [communityPlaylists, setCommunityPlaylists] = useState<CommunityPlaylist[]>([]);
+  const [isSearchingPlaylists, setIsSearchingPlaylists] = useState(false);
+  const [hasSearchedPlaylists, setHasSearchedPlaylists] = useState(false);
+  const [selectedCommunityPlaylist, setSelectedCommunityPlaylist] = useState<CommunityPlaylist | null>(null);
+  const [isCommunityPlaylistModalOpen, setIsCommunityPlaylistModalOpen] = useState(false);
+
   const [recentSearches, setRecentSearches] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem('sangeet_yt_recents');
@@ -190,12 +199,39 @@ export const MobileSearchView: React.FC<MobileSearchViewProps> = ({
   const isSpeaker = isSpeakerNode;
   const canPlayNow = isAdmin || isSpeaker;
 
+  const fetchCommunityPlaylists = async (searchTerm: string) => {
+    const trimmed = searchTerm.trim();
+    if (!trimmed) {
+      setCommunityPlaylists([]);
+      setHasSearchedPlaylists(false);
+      return;
+    }
+
+    setIsSearchingPlaylists(true);
+    setHasSearchedPlaylists(true);
+    try {
+      const res = await fetch(`/api/music/playlists/search?q=${encodeURIComponent(trimmed)}`);
+      const data = await res.json();
+      if (data.success && Array.isArray(data.playlists)) {
+        setCommunityPlaylists(data.playlists);
+      } else {
+        setCommunityPlaylists([]);
+      }
+    } catch (e) {
+      console.warn('Error fetching community playlists:', e);
+      setCommunityPlaylists([]);
+    } finally {
+      setIsSearchingPlaylists(false);
+    }
+  };
+
   // Execute search only when initialQuery is provided from outside navigation
   useEffect(() => {
     if (initialQuery && initialQuery.trim()) {
       setInputText(initialQuery);
       setSubmittedQuery(initialQuery);
       performSearch(initialQuery, 1, false);
+      fetchCommunityPlaylists(initialQuery);
     }
   }, [initialQuery]);
 
@@ -211,6 +247,8 @@ export const MobileSearchView: React.FC<MobileSearchViewProps> = ({
     if (!trimmed) {
       searchRequestIdRef.current += 1;
       setResults([]);
+      setCommunityPlaylists([]);
+      setHasSearchedPlaylists(false);
       setHasSearched(false);
       setIsSearching(false);
       setIsLoadingMore(false);
@@ -228,6 +266,9 @@ export const MobileSearchView: React.FC<MobileSearchViewProps> = ({
       setHasSearched(true);
       setIsSearching(true);
       setCurrentPage(1);
+
+      // Fetch community playlists in parallel for instant filter switching
+      fetchCommunityPlaylists(trimmed);
 
       try {
         const res = await fetch(
@@ -349,6 +390,7 @@ export const MobileSearchView: React.FC<MobileSearchViewProps> = ({
     if (inputText.trim()) {
       inputRef.current?.blur();
       performSearch(inputText);
+      fetchCommunityPlaylists(inputText);
     }
   };
 
@@ -356,14 +398,28 @@ export const MobileSearchView: React.FC<MobileSearchViewProps> = ({
     setInputText('');
     setSubmittedQuery('');
     setResults([]);
+    setCommunityPlaylists([]);
+    setHasSearchedPlaylists(false);
     setHasSearched(false);
     setIsSearching(false);
+    setIsSearchingPlaylists(false);
     inputRef.current?.focus();
+  };
+
+  const handleSelectFilter = (pill: string) => {
+    setActiveFilter(pill);
+    if (pill === 'Playlists') {
+      const q = submittedQuery.trim() || inputText.trim();
+      if (q && (communityPlaylists.length === 0 || !hasSearchedPlaylists)) {
+        fetchCommunityPlaylists(q);
+      }
+    }
   };
 
   const handleSelectRecent = (term: string) => {
     setInputText(term);
     performSearch(term);
+    fetchCommunityPlaylists(term);
   };
 
   const handleRemoveRecent = (e: React.MouseEvent, term: string) => {
@@ -604,7 +660,7 @@ export const MobileSearchView: React.FC<MobileSearchViewProps> = ({
             {SEARCH_FILTER_PILLS.map((pill) => (
               <button
                 key={pill}
-                onClick={() => setActiveFilter(pill)}
+                onClick={() => handleSelectFilter(pill)}
                 className={`px-3.5 py-1.5 rounded-full text-xs font-medium shrink-0 transition-all cursor-pointer ${
                   activeFilter === pill
                     ? 'bg-white text-black font-bold shadow'
@@ -621,22 +677,212 @@ export const MobileSearchView: React.FC<MobileSearchViewProps> = ({
             <span className="font-semibold truncate">
               Results for &ldquo;<span className="text-white">{submittedQuery}</span>&rdquo;
             </span>
-            {!isSearching && (
-              <span className="shrink-0 text-[11px] font-mono bg-[#1c1c1c] px-2 py-0.5 rounded-full border border-[#2a2a2a]">
-                {filteredResults.length} tracks
-              </span>
+            {activeFilter === 'Playlists' ? (
+              !isSearchingPlaylists && (
+                <span className="shrink-0 text-[11px] font-mono bg-[#1c1c1c] text-[#ff4d4d] px-2 py-0.5 rounded-full border border-[#2a2a2a] font-bold">
+                  {communityPlaylists.length} playlists
+                </span>
+              )
+            ) : (
+              !isSearching && (
+                <span className="shrink-0 text-[11px] font-mono bg-[#1c1c1c] px-2 py-0.5 rounded-full border border-[#2a2a2a]">
+                  {filteredResults.length} tracks
+                </span>
+              )
             )}
           </div>
 
-          {/* Loading Skeleton Indicator */}
-          {isSearching && (
-            <div className="py-12 flex flex-col items-center justify-center gap-3">
-              <Loader2 className="w-7 h-7 text-[#ff0000] animate-spin" />
-              <p className="text-xs text-neutral-400 font-medium">
-                Searching...
-              </p>
+          {/* COMMUNITY PLAYLISTS RESULTS (Mirrors YouTube "Community playlists") */}
+          {activeFilter === 'Playlists' ? (
+            <div className="space-y-4 pt-1">
+              {/* Loading State */}
+              {isSearchingPlaylists && (
+                <div className="py-14 flex flex-col items-center justify-center gap-3">
+                  <Loader2 className="w-8 h-8 text-[#ff0000] animate-spin" />
+                  <p className="text-xs text-neutral-400 font-medium">
+                    Searching YouTube Community Playlists...
+                  </p>
+                </div>
+              )}
+
+              {/* No Playlists Found */}
+              {!isSearchingPlaylists && communityPlaylists.length === 0 && (
+                <div className="py-16 text-center space-y-3 bg-[#121212] rounded-3xl border border-white/5 p-6">
+                  <ListMusic className="w-12 h-12 text-neutral-600 mx-auto" />
+                  <h3 className="text-sm font-bold text-white">No community playlists found</h3>
+                  <p className="text-xs text-neutral-400 max-w-xs mx-auto">
+                    Try searching with another keyword or explore recommended music collections.
+                  </p>
+                  <div className="pt-2 flex flex-wrap justify-center gap-2">
+                    {['Top Bollywood hits', 'Arijit Singh playlist', 'Punjabi superhits', '90s Romantic Songs'].map((sug) => (
+                      <button
+                        key={sug}
+                        onClick={() => {
+                          setInputText(sug);
+                          performSearch(sug);
+                          fetchCommunityPlaylists(sug);
+                        }}
+                        className="px-3.5 py-1.5 rounded-full bg-[#1c1c1c] hover:bg-[#252525] border border-white/10 text-xs text-neutral-200 active:scale-95 transition-all cursor-pointer"
+                      >
+                        {sug}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Community Playlists Grid / List */}
+              {!isSearchingPlaylists && communityPlaylists.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between pb-1">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-neutral-400 flex items-center gap-1.5">
+                      <ListMusic className="w-3.5 h-3.5 text-[#ff0000]" />
+                      <span>YouTube Community Playlists</span>
+                    </span>
+                    <span className="text-[11px] text-neutral-500 font-medium">Tap playlist to view songs</span>
+                  </div>
+
+                  {/* Top Community Playlist Highlight (YouTube Style) */}
+                  {communityPlaylists[0] && (
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#ff0000] block">
+                        Top Community Playlist
+                      </span>
+
+                      <div
+                        onClick={() => {
+                          setSelectedCommunityPlaylist(communityPlaylists[0]);
+                          setIsCommunityPlaylistModalOpen(true);
+                        }}
+                        className="p-3.5 rounded-2xl bg-[#141414] hover:bg-[#1a1a1a] border border-[#2d2d2d] hover:border-[#ff0000]/40 transition-all shadow-lg flex items-center gap-4 cursor-pointer group relative overflow-hidden"
+                      >
+                        {/* Layered Stacked Artwork */}
+                        <div className="relative shrink-0">
+                          <div className="absolute -top-1.5 inset-x-2 h-2.5 bg-white/20 rounded-t-xl transform scale-95 opacity-80" />
+                          <div className="absolute -top-0.5 inset-x-1 h-2 bg-white/30 rounded-t-xl transform scale-[0.98] opacity-90" />
+                          <div className="w-20 h-20 rounded-2xl overflow-hidden bg-black relative border border-white/15 shadow-md">
+                            <img
+                              src={communityPlaylists[0].thumbnail}
+                              alt={communityPlaylists[0].title}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                              loading="lazy"
+                            />
+                            <div className="absolute inset-x-0 bottom-0 py-0.5 px-1.5 bg-black/85 backdrop-blur-sm flex items-center justify-between text-[9px] font-mono text-white/90">
+                              <span className="flex items-center gap-1 font-bold truncate">
+                                <ListMusic className="w-2.5 h-2.5 text-[#ff0000] shrink-0" />
+                                <span>{communityPlaylists[0].videoCount ? `${communityPlaylists[0].videoCount} songs` : 'Playlist'}</span>
+                              </span>
+                            </div>
+                            <div className="absolute inset-0 bg-black/35 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                              <div className="w-8 h-8 rounded-full bg-[#ff0000] text-white flex items-center justify-center shadow-lg">
+                                <Play className="w-4 h-4 fill-white ml-0.5" />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Details */}
+                        <div className="flex-1 min-w-0 pr-1">
+                          <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-[#ff0000]/15 text-[#ff4d4d] border border-[#ff0000]/25 inline-block mb-1">
+                            Community Playlist
+                          </span>
+                          <h3 className="text-xs sm:text-sm font-bold text-white line-clamp-2 leading-snug group-hover:text-red-400 transition-colors">
+                            {communityPlaylists[0].title}
+                          </h3>
+                          <p className="text-xs text-neutral-300 truncate mt-1">
+                            {communityPlaylists[0].author}
+                          </p>
+                          <div className="flex items-center gap-2 mt-1.5 text-[11px] text-neutral-400">
+                            <span className="text-emerald-400 font-medium">✓ Curated</span>
+                            <span>&bull;</span>
+                            <span>YouTube Music</span>
+                          </div>
+                        </div>
+
+                        <div className="w-8 h-8 rounded-full bg-white/5 group-hover:bg-[#ff0000] text-neutral-400 group-hover:text-white flex items-center justify-center shrink-0 transition-all">
+                          <ChevronRight className="w-4 h-4" />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Rest of the Community Playlists */}
+                  {communityPlaylists.length > 1 && (
+                    <div className="space-y-2 pt-2">
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-neutral-400 block">
+                        More Community Playlists
+                      </span>
+
+                      {communityPlaylists.slice(1).map((pl) => (
+                        <div
+                          key={pl.id}
+                          onClick={() => {
+                            setSelectedCommunityPlaylist(pl);
+                            setIsCommunityPlaylistModalOpen(true);
+                          }}
+                          className="p-3 rounded-2xl bg-[#141414] hover:bg-[#1c1c1c] border border-white/[0.08] hover:border-white/20 transition-all flex items-center gap-3.5 group cursor-pointer active:scale-[0.98] shadow-md relative overflow-hidden"
+                        >
+                          {/* Layered Stacked Artwork */}
+                          <div className="relative shrink-0">
+                            <div className="absolute -top-1.5 inset-x-2 h-2.5 bg-white/20 rounded-t-xl transform scale-95 opacity-80" />
+                            <div className="absolute -top-0.5 inset-x-1 h-2 bg-white/30 rounded-t-xl transform scale-[0.98] opacity-90" />
+                            <div className="w-16 h-16 rounded-xl overflow-hidden bg-[#222] relative border border-white/10 group-hover:border-[#ff0000]/50 transition-colors shadow-inner">
+                              <img
+                                src={pl.thumbnail}
+                                alt={pl.title}
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                loading="lazy"
+                              />
+                              <div className="absolute inset-x-0 bottom-0 py-0.5 px-1 bg-black/85 backdrop-blur-sm flex items-center justify-between text-[9px] font-mono text-white/90">
+                                <span className="flex items-center gap-1 font-bold truncate">
+                                  <ListMusic className="w-2.5 h-2.5 text-[#ff0000] shrink-0" />
+                                  <span>{pl.videoCount ? `${pl.videoCount} songs` : 'Playlist'}</span>
+                                </span>
+                              </div>
+                              <div className="absolute inset-0 bg-black/35 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                <div className="w-6 h-6 rounded-full bg-[#ff0000] text-white flex items-center justify-center shadow-lg">
+                                  <Play className="w-3 h-3 fill-white ml-0.5" />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Details */}
+                          <div className="flex-1 min-w-0 pr-1">
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-[#ff0000]/15 text-[#ff4d4d] border border-[#ff0000]/25">
+                                Community playlist
+                              </span>
+                            </div>
+                            <h3 className="text-xs sm:text-sm font-bold text-white line-clamp-2 group-hover:text-red-400 transition-colors leading-snug">
+                              {pl.title}
+                            </h3>
+                            <p className="text-[11px] text-neutral-400 truncate mt-1">
+                              {pl.author} &bull; YouTube
+                            </p>
+                          </div>
+
+                          <div className="w-8 h-8 rounded-full bg-white/[0.04] group-hover:bg-[#ff0000] text-neutral-400 group-hover:text-white flex items-center justify-center shrink-0 transition-all">
+                            <ChevronRight className="w-4 h-4" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          )}
+          ) : (
+            <>
+              {/* Loading Skeleton Indicator */}
+              {isSearching && (
+                <div className="py-12 flex flex-col items-center justify-center gap-3">
+                  <Loader2 className="w-7 h-7 text-[#ff0000] animate-spin" />
+                  <p className="text-xs text-neutral-400 font-medium">
+                    Searching...
+                  </p>
+                </div>
+              )}
 
           {/* No Results Fallback */}
           {!isSearching && filteredResults.length === 0 && (
@@ -929,8 +1175,22 @@ export const MobileSearchView: React.FC<MobileSearchViewProps> = ({
               </div>
             </div>
           )}
+            </>
+          )}
         </div>
       )}
+
+      {/* Community Playlist Viewer Modal */}
+      <MobileCommunityPlaylistModal
+        isOpen={isCommunityPlaylistModalOpen}
+        onClose={() => setIsCommunityPlaylistModalOpen(false)}
+        playlist={selectedCommunityPlaylist}
+        onPlayTrackNow={onPlayTrackNow}
+        onAddTrackToQueue={onAddTrackToQueue}
+        onPlayNext={onPlayNext}
+        userRole={userRole}
+        currentTrackIsAdmin={currentTrackIsAdmin}
+      />
     </div>
   );
 };

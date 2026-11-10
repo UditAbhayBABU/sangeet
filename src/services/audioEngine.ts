@@ -49,6 +49,10 @@ class AudioEngine {
   private promoSafetyTimer: any = null;
   private promoEndCleanup: (() => void) | null = null;
 
+  // Background Audio Keep-Alive Carrier & Direct Hardware Ramp
+  private carrierAudio: HTMLAudioElement | null = null;
+  private musicVolumeRampInterval: any = null;
+
   // YouTube Music Player integration
   private ytPlayer: any = null;
   private ytReady: boolean = false;
@@ -204,6 +208,77 @@ class AudioEngine {
     }, 1000);
   }
 
+  private initCarrierAudio() {
+    if (this.carrierAudio || typeof window === 'undefined') return;
+    try {
+      const silentWav = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+      this.carrierAudio = new Audio(silentWav);
+      this.carrierAudio.loop = true;
+      this.carrierAudio.volume = 0.001;
+      this.carrierAudio.setAttribute('playsinline', 'true');
+      (this.carrierAudio as any).playsInline = true;
+    } catch {
+      // ignore
+    }
+  }
+
+  public startCarrierAudio() {
+    this.initCarrierAudio();
+    if (this.carrierAudio && this.carrierAudio.paused) {
+      try {
+        this.carrierAudio.play().catch(() => {});
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  public stopCarrierAudio() {
+    if (this.carrierAudio && !this.carrierAudio.paused) {
+      try {
+        this.carrierAudio.pause();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  private rampAudioElementVolume(targetVolume: number, rampSeconds: number) {
+    if (!this.musicAudio) return;
+    if (this.musicVolumeRampInterval) {
+      clearInterval(this.musicVolumeRampInterval);
+      this.musicVolumeRampInterval = null;
+    }
+    const startVol = this.musicAudio.volume;
+    const target = Math.max(0.001, Math.min(1, targetVolume));
+    const startTime = Date.now();
+    const durationMs = Math.max(50, rampSeconds * 1000);
+
+    this.musicVolumeRampInterval = window.setInterval(() => {
+      const elapsed = Date.now() - startTime;
+      const progress = Math.min(1, elapsed / durationMs);
+      const curVol = startVol + progress * (target - startVol);
+      if (this.musicAudio) {
+        try {
+          this.musicAudio.volume = Math.max(0.001, Math.min(1, curVol));
+        } catch {
+          // ignore
+        }
+      }
+      if (progress >= 1) {
+        clearInterval(this.musicVolumeRampInterval);
+        this.musicVolumeRampInterval = null;
+        if (this.musicAudio) {
+          try {
+            this.musicAudio.volume = target;
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }, 25);
+  }
+
   public init() {
     if (this.ctx) return;
 
@@ -212,6 +287,9 @@ class AudioEngine {
 
     this.musicAudio = new Audio();
     this.musicAudio.preload = 'auto';
+    this.musicAudio.setAttribute('playsinline', 'true');
+    this.musicAudio.setAttribute('webkit-playsinline', 'true');
+    (this.musicAudio as any).playsInline = true;
     this.musicAudio.addEventListener('playing', () => {
       this.hasPlayedCurrentTrack = true;
       this.consecutiveErrorCount = 0;
@@ -295,23 +373,43 @@ class AudioEngine {
       console.warn('Web Audio master bus routing warning:', e);
     }
 
-    // Connect HTML5 Media Element Source Nodes in isolated try blocks
-    try {
-      if (!this.musicSourceNode) {
-        this.musicSourceNode = this.ctx.createMediaElementSource(this.musicAudio);
-        this.musicSourceNode.connect(this.musicGain);
-      }
-    } catch (e) {
-      console.warn('musicSourceNode routing warning:', e);
-    }
+    // Direct Native Audio Pipeline for Android/iOS Lock-screen & Background Playback:
+    // We intentionally DO NOT route musicAudio through AudioContext createMediaElementSource!
+    // Untethered HTMLAudioElement outputs directly to the system audio daemon.
+    // When the phone is locked or minimized to Recent Apps, mobile browsers (Android Chrome,
+    // iOS Safari, PWA) keep HTMLAudioElement running continuously without suspending or muting!
+    // Volume ducking and crossfades are handled directly on musicAudio.volume via rampAudioElementVolume.
 
     try {
-      if (!this.promoSourceNode) {
+      if (!this.promoSourceNode && this.promoAudio) {
         this.promoSourceNode = this.ctx.createMediaElementSource(this.promoAudio);
         this.promoSourceNode.connect(this.promoGain);
       }
     } catch (e) {
       console.warn('promoSourceNode routing warning:', e);
+    }
+
+    // Initialize Background Carrier Keep-Alive Loop
+    this.initCarrierAudio();
+
+    // Visibility Change Listener: Ensures AudioContext resumes on app return and keeps carrier active in background
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          if (this.ctx && this.ctx.state === 'suspended') {
+            this.ctx.resume().catch(() => {});
+          }
+          if (this.isMusicPlayingRequested) {
+            this.resumeMusic();
+          }
+        } else {
+          // Screen locked or app minimized to Recent Apps:
+          // Activate silent carrier audio loop so phone OS doesn't sleep the media process
+          if (this.isMusicPlayingRequested) {
+            this.startCarrierAudio();
+          }
+        }
+      });
     }
 
     // Initialize YouTube IFrame Player
@@ -588,10 +686,10 @@ class AudioEngine {
     }
     this.isDucked = true;
 
-    // Direct hardware volume clamp on HTML Audio Element (essential if Web Audio routing is bypassed by browser CORS)
+    // Direct hardware volume clamp on HTML Audio Element with smooth studio fade
     if (this.musicAudio) {
       try {
-        this.musicAudio.volume = Math.max(0.01, Math.min(1, targetGain));
+        this.rampAudioElementVolume(Math.max(0.001, Math.min(1, targetGain)), rampSeconds);
       } catch {
         // ignore
       }
@@ -648,10 +746,10 @@ class AudioEngine {
     }
     this.isDucked = false;
 
-    // Direct hardware volume restore on HTML Audio Element
+    // Direct hardware volume restore on HTML Audio Element with smooth studio fade
     if (this.musicAudio) {
       try {
-        this.musicAudio.volume = Math.max(0.01, Math.min(1, this.normalVolume));
+        this.rampAudioElementVolume(Math.max(0.001, Math.min(1, this.normalVolume)), finalRamp);
       } catch {
         // ignore
       }
@@ -681,24 +779,51 @@ class AudioEngine {
   public async playMusic(
     url: string,
     startTime: number = 0,
-    trackInfo?: { id?: string; source?: string; youtubeVideoId?: string }
+    trackInfo?: {
+      id?: string;
+      source?: string;
+      youtubeVideoId?: string;
+      directAudioUrl?: string;
+      title?: string;
+      artist?: string;
+    }
   ): Promise<void> {
     this.init();
     await this.resumeContext();
+
+    // Prefer direct audio stream (320kbps MP4/AAC) for 100% background playback immunity
+    const directAudio = trackInfo?.directAudioUrl || (url && !url.includes('youtube.com') && !url.includes('youtu.be') ? url : null);
 
     // Check if this track is from YouTube Music
     const extractedFromId = trackInfo?.id?.startsWith('yt-') ? trackInfo.id.replace('yt-', '') : null;
     const extractedYtId = trackInfo?.youtubeVideoId || this.extractYouTubeId(url) || extractedFromId;
     const finalVideoId = trackInfo?.youtubeVideoId || (extractedYtId && /^[a-zA-Z0-9_-]{11}$/.test(extractedYtId) ? extractedYtId : null);
-    const isYouTube = Boolean(finalVideoId) ||
+    const isYouTube = !directAudio && (
+      Boolean(finalVideoId) ||
       trackInfo?.source === 'youtube' ||
       url.includes('youtube.com') ||
-      url.includes('youtu.be');
+      url.includes('youtu.be')
+    );
 
     this.isMusicPlayingRequested = true;
+    this.startCarrierAudio();
 
     if (isYouTube && finalVideoId) {
       this.activeSource = 'youtube';
+
+      // Background resolution of direct audio stream for fallback / background resilience
+      if (trackInfo?.title && !trackInfo.directAudioUrl) {
+        fetch(`/api/tracks/resolve-audio-stream?title=${encodeURIComponent(trackInfo.title)}&artist=${encodeURIComponent(trackInfo.artist || '')}`)
+          .then((r) => r.json())
+          .then((data) => {
+            if (data.success && data.directAudioUrl) {
+              trackInfo.directAudioUrl = data.directAudioUrl;
+              console.log(`[AudioEngine] Resolved direct background audio stream for "${trackInfo.title}"`);
+            }
+          })
+          .catch(() => {});
+      }
+
       // Pause HTML audio
       if (this.musicAudio && !this.musicAudio.paused) {
         try {
@@ -776,7 +901,8 @@ class AudioEngine {
       return;
     }
 
-    // HTML5 Audio playback (JioSaavn or Uploaded)
+    // Direct HTML5 Audio playback (JioSaavn 320kbps or Uploaded)
+    const effectiveUrl = directAudio || url;
     this.currentPlayingVideoId = null;
     this.activeSource = 'html';
     this.trackLoadedAt = Date.now();
@@ -794,7 +920,7 @@ class AudioEngine {
     if (!this.musicAudio) return;
 
     // Check pre-cache lookup first
-    const resolvedUrl = this.preCacheBlobUrls.get(url) || url;
+    const resolvedUrl = this.preCacheBlobUrls.get(effectiveUrl) || effectiveUrl;
 
     // Guard: Prevent setting empty or unplayable URL on HTML Audio Element
     if (!resolvedUrl || resolvedUrl.trim() === '' || resolvedUrl.includes('youtube.com') || resolvedUrl.includes('youtu.be')) {
@@ -820,13 +946,22 @@ class AudioEngine {
     if (!this.isMusicPlayingRequested) return;
 
     try {
-      if (this.ctx && this.musicGain && this.crossfadeSeconds > 0 && (!startTime || startTime === 0) && !this.isDucked) {
-        const now = this.ctx.currentTime;
-        this.musicGain.gain.setValueAtTime(0.001, now);
-        this.musicGain.gain.linearRampToValueAtTime(this.normalVolume, now + Math.min(3, this.crossfadeSeconds));
+      const targetVol = this.isDucked
+        ? (this.currentDuckingMode === 'db'
+          ? Math.max(0.001, this.normalVolume * Math.pow(10, this.currentDuckingDb / 20))
+          : Math.max(0.001, this.normalVolume * this.currentDuckingPercent))
+        : this.normalVolume;
+
+      if (this.crossfadeSeconds > 0 && (!startTime || startTime === 0) && !this.isDucked) {
+        this.musicAudio.volume = 0.001;
+        this.rampAudioElementVolume(targetVol, Math.min(3, this.crossfadeSeconds));
+      } else {
+        this.musicAudio.volume = targetVol;
       }
+
       this.musicPlayPromise = this.musicAudio.play();
       await this.musicPlayPromise;
+      this.startCarrierAudio();
     } catch (err: unknown) {
       const error = err as { name?: string; message?: string };
       if (error?.name === 'AbortError' || error?.message?.includes('interrupted')) {
@@ -840,6 +975,7 @@ class AudioEngine {
             if (startTime > 0) this.musicAudio.currentTime = startTime;
             this.musicPlayPromise = this.musicAudio.play();
             await this.musicPlayPromise;
+            this.startCarrierAudio();
             return;
           } catch (retryErr) {
             console.warn('[AudioEngine] Proxy fallback also failed:', retryErr);
@@ -855,6 +991,7 @@ class AudioEngine {
 
   public async pauseMusic(): Promise<void> {
     this.isMusicPlayingRequested = false;
+    this.stopCarrierAudio();
 
     // Pause YouTube
     if (this.ytPlayer && typeof this.ytPlayer.pauseVideo === 'function') {
@@ -1775,6 +1912,7 @@ class AudioEngine {
   }
 
   public stopAll() {
+    this.stopCarrierAudio();
     this.stopMusic();
     this.stopPromo();
     // Do not kill an active user live mic broadcast

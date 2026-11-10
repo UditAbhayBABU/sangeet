@@ -4,6 +4,7 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import ytSearch from 'yt-search';
+import CryptoJS from 'crypto-js';
 import { GoogleGenAI } from '@google/genai';
 import {
   loadDatabase,
@@ -54,6 +55,8 @@ export interface SongTrack {
   artworkUrl?: string;
   source: 'online' | 'local_upload' | 'youtube' | 'jiosaavn';
   youtubeVideoId?: string;
+  directAudioUrl?: string;
+  isBackgroundOptimized?: boolean;
   requestedBy: string;
   addedAt: number;
   priority: 'admin_instant' | 'admin_high' | 'staff_normal' | 'auto_recommend';
@@ -259,12 +262,12 @@ export function syncStationStateToCloudDatabase() {
 // -------------------------------------------------------------
 const stationConnectedDevices = new Map<string, ConnectedDevice>();
 
-// Retrieve currently active devices for a station (seen in last 9 seconds)
+// Retrieve currently active devices for a station (seen in last 25 seconds)
 export function getStationDevices(stationId: string): ConnectedDevice[] {
   const now = Date.now();
   const list: ConnectedDevice[] = [];
   for (const dev of stationConnectedDevices.values()) {
-    if (dev.stationId === stationId && now - dev.lastSeen < 9000) {
+    if (dev.stationId === stationId && now - dev.lastSeen < 25000) {
       list.push(dev);
     }
   }
@@ -278,39 +281,15 @@ export function getStationDevices(stationId: string): ConnectedDevice[] {
 // Rule 4: If the speaker leaves/disconnects, randomly elect another connected device!
 export function electSpeakerForStation(stationId: string, preferredDeviceId?: string): string {
   const aliveDevices = getStationDevices(stationId);
-
-  // If no devices connected, reset speaker state
-  if (aliveDevices.length === 0) {
-    stationState.speaker.activeDeviceId = '';
-    stationState.speaker.activeDeviceName = '';
-    stationState.speaker.lastHeartbeat = Date.now();
-    stationState.handoverRequest = null;
-    return '';
-  }
-
-  // If only 1 device is connected to the station, it MUST be the speaker!
-  if (aliveDevices.length === 1) {
-    const onlyDev = aliveDevices[0];
-    stationState.speaker.activeDeviceId = onlyDev.deviceId;
-    stationState.speaker.activeDeviceName = onlyDev.deviceName;
-    stationState.speaker.lastHeartbeat = Date.now();
-    stationState.handoverRequest = null;
-    onlyDev.isSpeaker = true;
-    return onlyDev.deviceId;
-  }
-
-  // Check if current speaker is still connected and alive
-  const currentSpeakerAlive = aliveDevices.find(
-    (d) => d.deviceId === stationState.speaker.activeDeviceId
-  );
+  const now = Date.now();
 
   // If preferred device is explicitly requested (e.g. approved handover or claim)
   if (preferredDeviceId) {
-    const pref = aliveDevices.find((d) => d.deviceId === preferredDeviceId);
+    const pref = aliveDevices.find((d) => d.deviceId === preferredDeviceId) || stationConnectedDevices.get(preferredDeviceId);
     if (pref) {
       stationState.speaker.activeDeviceId = pref.deviceId;
       stationState.speaker.activeDeviceName = pref.deviceName;
-      stationState.speaker.lastHeartbeat = Date.now();
+      stationState.speaker.lastHeartbeat = now;
       stationState.handoverRequest = null;
       for (const dev of aliveDevices) {
         dev.isSpeaker = dev.deviceId === pref.deviceId;
@@ -319,13 +298,39 @@ export function electSpeakerForStation(stationId: string, preferredDeviceId?: st
     }
   }
 
-  // If current speaker is alive and valid, keep it as the single speaker
-  if (currentSpeakerAlive) {
+  // Check if current speaker is still connected and alive (seen in last 30 seconds)
+  const currentSpeakerDev = stationState.speaker.activeDeviceId
+    ? stationConnectedDevices.get(stationState.speaker.activeDeviceId)
+    : null;
+  const isCurrentSpeakerAlive = currentSpeakerDev && (now - currentSpeakerDev.lastSeen < 30000);
+
+  // If current speaker is alive and valid, keep it as the single speaker!
+  if (isCurrentSpeakerAlive && currentSpeakerDev) {
     for (const dev of aliveDevices) {
-      dev.isSpeaker = dev.deviceId === currentSpeakerAlive.deviceId;
+      dev.isSpeaker = dev.deviceId === currentSpeakerDev.deviceId;
     }
-    stationState.speaker.activeDeviceName = currentSpeakerAlive.deviceName;
-    return currentSpeakerAlive.deviceId;
+    stationState.speaker.activeDeviceName = currentSpeakerDev.deviceName;
+    return currentSpeakerDev.deviceId;
+  }
+
+  // If no devices connected, reset speaker state
+  if (aliveDevices.length === 0) {
+    stationState.speaker.activeDeviceId = '';
+    stationState.speaker.activeDeviceName = '';
+    stationState.speaker.lastHeartbeat = now;
+    stationState.handoverRequest = null;
+    return '';
+  }
+
+  // If only 1 device is connected to the station and no alive speaker exists, it becomes speaker
+  if (aliveDevices.length === 1) {
+    const onlyDev = aliveDevices[0];
+    stationState.speaker.activeDeviceId = onlyDev.deviceId;
+    stationState.speaker.activeDeviceName = onlyDev.deviceName;
+    stationState.speaker.lastHeartbeat = now;
+    stationState.handoverRequest = null;
+    onlyDev.isSpeaker = true;
+    return onlyDev.deviceId;
   }
 
   // Otherwise: Speaker left or is dead! Randomly elect from remaining alive devices!
@@ -334,7 +339,7 @@ export function electSpeakerForStation(stationId: string, preferredDeviceId?: st
 
   stationState.speaker.activeDeviceId = chosenSpeaker.deviceId;
   stationState.speaker.activeDeviceName = chosenSpeaker.deviceName;
-  stationState.speaker.lastHeartbeat = Date.now();
+  stationState.speaker.lastHeartbeat = now;
   stationState.handoverRequest = null;
 
   for (const dev of aliveDevices) {
@@ -368,9 +373,13 @@ export function touchOrRegisterDevice(
     stationConnectedDevices.set(deviceId, dev);
 
     // Rule: First device to join station becomes speaker automatically!
-    const aliveDevices = getStationDevices(stationId);
-    const hasLiveSpeaker = aliveDevices.some(
-      (d) => d.deviceId === stationState.speaker.activeDeviceId && d.deviceId !== deviceId
+    const currentSpeaker = stationState.speaker.activeDeviceId
+      ? stationConnectedDevices.get(stationState.speaker.activeDeviceId)
+      : null;
+    const hasLiveSpeaker = Boolean(
+      currentSpeaker &&
+      currentSpeaker.deviceId !== deviceId &&
+      now - currentSpeaker.lastSeen < 30000
     );
 
     if (!hasLiveSpeaker || !stationState.speaker.activeDeviceId) {
@@ -394,9 +403,13 @@ export function touchOrRegisterDevice(
       if (stationState.stationId === oldStation && stationState.speaker.activeDeviceId === deviceId) {
         electSpeakerForStation(oldStation);
       }
-      const aliveDevices = getStationDevices(stationId);
-      const hasLiveSpeaker = aliveDevices.some(
-        (d) => d.deviceId === stationState.speaker.activeDeviceId && d.deviceId !== deviceId
+      const currentSpeaker = stationState.speaker.activeDeviceId
+        ? stationConnectedDevices.get(stationState.speaker.activeDeviceId)
+        : null;
+      const hasLiveSpeaker = Boolean(
+        currentSpeaker &&
+        currentSpeaker.deviceId !== deviceId &&
+        now - currentSpeaker.lastSeen < 30000
       );
       if (!hasLiveSpeaker || !stationState.speaker.activeDeviceId) {
         stationState.speaker.activeDeviceId = deviceId;
@@ -429,14 +442,14 @@ export function removeDeviceFromStation(deviceId: string, stationId: string) {
   }
 }
 
-// Background Watchdog: every 2.5s cleans up stale devices (e.g. closed tabs/network loss)
+// Background Watchdog: every 3s cleans up stale devices (e.g. closed tabs/network loss > 30s)
 setInterval(() => {
   const now = Date.now();
   let speakerDied = false;
   const currentStationId = stationState.stationId || 'station-msd';
 
   for (const [id, dev] of stationConnectedDevices.entries()) {
-    if (now - dev.lastSeen > 9000) {
+    if (now - dev.lastSeen > 30000) {
       if (dev.deviceId === stationState.speaker.activeDeviceId) {
         speakerDied = true;
       }
@@ -445,10 +458,10 @@ setInterval(() => {
   }
 
   if (speakerDied) {
-    console.log(`[Speaker Watchdog] Active speaker lost connection. Randomly electing new speaker...`);
+    console.log(`[Speaker Watchdog] Active speaker lost connection for >30s. Electing new speaker...`);
     electSpeakerForStation(currentStationId);
   }
-}, 2500);
+}, 3000);
 
 // -------------------------------------------------------------
 // API Endpoints
@@ -530,9 +543,11 @@ app.post('/api/station/:stationId/action', async (req, res) => {
     }
 
     case 'ADD_TO_QUEUE': {
-      if (payload.deviceId && (!stationState.speaker.activeDeviceId || getStationDevices(req.params.stationId).length <= 1)) {
+      if (payload.deviceId) {
         touchOrRegisterDevice(req.params.stationId, payload.deviceId, payload.deviceName, 'staff');
-        electSpeakerForStation(req.params.stationId, payload.deviceId);
+        if (!stationState.speaker.activeDeviceId) {
+          electSpeakerForStation(req.params.stationId, payload.deviceId);
+        }
       }
 
       const originalId = payload.track.id || '';
@@ -570,7 +585,9 @@ app.post('/api/station/:stationId/action', async (req, res) => {
     case 'ADMIN_PLAY_NOW': {
       if (payload.deviceId) {
         touchOrRegisterDevice(req.params.stationId, payload.deviceId, payload.deviceName, 'admin');
-        electSpeakerForStation(req.params.stationId, payload.deviceId);
+        if (!stationState.speaker.activeDeviceId) {
+          electSpeakerForStation(req.params.stationId, payload.deviceId);
+        }
       }
 
       // Urgent Admin Instant Override:
@@ -632,9 +649,11 @@ app.post('/api/station/:stationId/action', async (req, res) => {
     }
 
     case 'PLAY_NOW': {
-      if (payload.deviceId && (!stationState.speaker.activeDeviceId || getStationDevices(req.params.stationId).length <= 1)) {
+      if (payload.deviceId) {
         touchOrRegisterDevice(req.params.stationId, payload.deviceId, payload.deviceName, payload.role || 'staff');
-        electSpeakerForStation(req.params.stationId, payload.deviceId);
+        if (!stationState.speaker.activeDeviceId) {
+          electSpeakerForStation(req.params.stationId, payload.deviceId);
+        }
       }
 
       // Priority Guard: If an Admin priority track is currently playing, non-admins CANNOT kill it!
@@ -1471,6 +1490,71 @@ app.get('/api/audio/proxy', async (req, res) => {
   }
 });
 
+// Decrypt JioSaavn DES-encrypted media URL to high-quality 320kbps MP4/AAC stream
+export function decryptSaavnMediaUrl(encryptedMediaUrl?: string): string | null {
+  if (!encryptedMediaUrl) return null;
+  try {
+    const key = CryptoJS.enc.Utf8.parse('38346591');
+    const cipherParams = CryptoJS.lib.CipherParams.create({
+      ciphertext: CryptoJS.enc.Base64.parse(encryptedMediaUrl),
+    });
+    const decrypted = CryptoJS.DES.decrypt(cipherParams, key, {
+      mode: CryptoJS.mode.ECB,
+      padding: CryptoJS.pad.Pkcs7,
+    });
+    const raw = decrypted.toString(CryptoJS.enc.Utf8);
+    if (!raw || !raw.startsWith('http')) return null;
+    return raw.replace('_96.mp4', '_320.mp4');
+  } catch {
+    return null;
+  }
+}
+
+// Endpoint to resolve direct background-playable audio stream for any track (JioSaavn 320kbps)
+app.get('/api/tracks/resolve-audio-stream', async (req, res) => {
+  const query = (req.query.q as string) || '';
+  const title = (req.query.title as string) || '';
+  const artist = (req.query.artist as string) || '';
+  const cleanSearch = `${title} ${artist}`.trim() || query;
+
+  if (!cleanSearch) {
+    return res.status(400).json({ success: false, error: 'Query is required' });
+  }
+
+  try {
+    const saavnUrl = `https://www.jiosaavn.com/api.php?__call=search.getResults&_format=json&_marker=0&cc=in&includeMetaTags=1&q=${encodeURIComponent(cleanSearch)}&p=1&n=5`;
+    const response = await fetch(saavnUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (response.ok) {
+      const data = await response.json() as any;
+      if (data.results && data.results.length > 0) {
+        for (const item of data.results) {
+          const direct = decryptSaavnMediaUrl(item.encrypted_media_url) || item.media_preview_url;
+          if (direct) {
+            return res.json({
+              success: true,
+              directAudioUrl: direct,
+              title: cleanTrackTitle(decodeHtmlEntities(item.song || item.title || '')),
+              artist: decodeHtmlEntities(item.primary_artists || item.singers || ''),
+              artworkUrl: item.image ? item.image.replace('150x150', '500x500') : undefined,
+              source: 'jiosaavn',
+            });
+          }
+        }
+      }
+    }
+    return res.json({ success: false, error: 'No direct audio stream found' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Resolution failed' });
+  }
+});
+
 // -------------------------------------------------------------
 // Intelligent Title Normalization & Music De-Cluttering Engine
 // Removes repeated uploads, identical songs, and cluttering results
@@ -1966,6 +2050,7 @@ export async function searchTracksInternal(
             album?: string;
             duration?: string | number;
             media_preview_url?: string;
+            encrypted_media_url?: string;
             image?: string;
           }>;
         };
@@ -1979,6 +2064,12 @@ export async function searchTracksInternal(
               const cleanImage = item.image ? item.image.replace('150x150', '500x500') : '';
               if (!rawTitle) return null;
 
+              // Extract direct 320kbps audio stream from encrypted media URL
+              const directStream = decryptSaavnMediaUrl(item.encrypted_media_url);
+
+              let ytVideoId: string | undefined = undefined;
+              let ytThumb: string | undefined = undefined;
+
               try {
                 const labelHint = item.album || '';
                 const ytMatchRes = await ytSearch(`${rawTitle} ${rawArtist} ${labelHint} official song`).catch(() => null);
@@ -1986,43 +2077,33 @@ export async function searchTracksInternal(
                   ytMatchRes?.videos?.find((v) => (v.seconds || 0) >= 45 && (v.seconds || 0) <= 900 && isVerifiedOfficialSource(v)) ||
                   ytMatchRes?.videos?.find((v) => (v.seconds || 0) >= 45 && (v.seconds || 0) <= 900 && !AI_FAKE_REMAKE_REGEX.test(v.title || '') && !AI_FAKE_REMAKE_REGEX.test(v.author?.name || ''));
                 if (bestMatch) {
-                  return {
-                    id: `saavn-${item.id}`,
-                    title: cleanTrackTitle(rawTitle),
-                    artist: rawArtist || bestMatch.author?.name || 'JioSaavn',
-                    album: decodeHtmlEntities(item.album || 'Single'),
-                    duration: Number(item.duration) || bestMatch.seconds || 240,
-                    audioUrl: `https://www.youtube.com/watch?v=${bestMatch.videoId}`,
-                    youtubeVideoId: bestMatch.videoId,
-                    artworkUrl: cleanImage || bestMatch.thumbnail,
-                    source: 'jiosaavn' as const,
-                    requestedBy: '',
-                    addedAt: Date.now(),
-                    priority: 'staff_normal' as const,
-                    isOfficial: true,
-                  };
+                  ytVideoId = bestMatch.videoId;
+                  ytThumb = bestMatch.thumbnail;
                 }
               } catch {
                 // fallback
               }
 
-              if (item.media_preview_url) {
-                return {
-                  id: `saavn-stream-${item.id}`,
-                  title: cleanTrackTitle(rawTitle),
-                  artist: rawArtist || 'JioSaavn Music',
-                  album: decodeHtmlEntities(item.album || 'Single'),
-                  duration: Number(item.duration) || 240,
-                  audioUrl: item.media_preview_url,
-                  artworkUrl: cleanImage,
-                  source: 'jiosaavn' as const,
-                  requestedBy: '',
-                  addedAt: Date.now(),
-                  priority: 'staff_normal' as const,
-                  isOfficial: true,
-                };
-              }
-              return null;
+              const finalAudioUrl = directStream || (ytVideoId ? `https://www.youtube.com/watch?v=${ytVideoId}` : item.media_preview_url);
+              if (!finalAudioUrl) return null;
+
+              return {
+                id: `saavn-${item.id}`,
+                title: cleanTrackTitle(rawTitle),
+                artist: rawArtist || 'JioSaavn',
+                album: decodeHtmlEntities(item.album || 'Single'),
+                duration: Number(item.duration) || 240,
+                audioUrl: finalAudioUrl,
+                directAudioUrl: directStream || item.media_preview_url,
+                youtubeVideoId: ytVideoId,
+                artworkUrl: cleanImage || ytThumb,
+                source: 'jiosaavn' as const,
+                requestedBy: '',
+                addedAt: Date.now(),
+                priority: 'staff_normal' as const,
+                isOfficial: true,
+                isBackgroundOptimized: Boolean(directStream || item.media_preview_url),
+              };
             })
           );
 
@@ -2036,22 +2117,20 @@ export async function searchTracksInternal(
   };
 
   if (requestedSource === 'saavn') {
-    const saavnTracks = await fetchJioSaavn();
-    saavnTracks.forEach(addCandidate);
+    const saavnOnlyTracks = await fetchJioSaavn();
+    saavnOnlyTracks.forEach(addCandidate);
     if (rawCandidatePool.length < 5) {
       const ytTracks = await fetchYouTubeMusic();
       ytTracks.forEach(addCandidate);
     }
   } else {
-    // Default 'all' or 'youtube': 100% direct YouTube Music search!
-    const ytTracks = await fetchYouTubeMusic();
+    // Default 'all' or 'youtube': Fetch both YouTube Music and JioSaavn catalog in parallel for maximum background audio resilience
+    const [ytTracks, saavnTracks] = await Promise.all([
+      fetchYouTubeMusic().catch(() => [] as SongTrack[]),
+      fetchJioSaavn().catch(() => [] as SongTrack[]),
+    ]);
     ytTracks.forEach(addCandidate);
-
-    // Fallback gracefully to JioSaavn ONLY if YouTube returned 0 results
-    if (rawCandidatePool.length === 0) {
-      const saavnTracks = await fetchJioSaavn().catch(() => [] as SongTrack[]);
-      saavnTracks.forEach(addCandidate);
-    }
+    saavnTracks.forEach(addCandidate);
   }
 
   // 5. Intelligent Relevance Scoring & Sorting
@@ -2499,6 +2578,292 @@ app.get('/api/music/search', async (req, res) => {
     count: fullSongsOnly.length,
     hasMore: fullSongsOnly.length > 0 && page < 20,
   });
+});
+
+export interface CommunityPlaylistResult {
+  id: string;
+  title: string;
+  author: string;
+  thumbnail: string;
+  videoCount?: number;
+  url: string;
+}
+
+export async function searchCommunityPlaylistsInternal(query: string): Promise<CommunityPlaylistResult[]> {
+  const cleanQ = (query || '').trim();
+  if (!cleanQ) return [];
+
+  const map = new Map<string, CommunityPlaylistResult>();
+
+  // 1. YouTube Music direct yt-search playlist lookup
+  try {
+    const r1 = await ytSearch(`${cleanQ} playlist`);
+    if (r1 && Array.isArray(r1.playlists)) {
+      for (const pl of r1.playlists) {
+        if (pl.listId && !map.has(pl.listId)) {
+          const rawTitle = (pl.title || '').replace(/#[\w-]+/g, '').trim();
+          map.set(pl.listId, {
+            id: pl.listId,
+            title: rawTitle,
+            author: pl.author?.name || 'YouTube Music',
+            thumbnail: pl.thumbnail || pl.image || `https://i.ytimg.com/vi/${pl.listId}/hqdefault.jpg`,
+            videoCount: pl.videoCount || undefined,
+            url: pl.url || `https://youtube.com/playlist?list=${pl.listId}`,
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('ytSearch playlists error:', err);
+  }
+
+  // 2. YouTube direct sp=EgIQAw%253D%253D filter lookup (Exact "Playlists" search on YouTube)
+  try {
+    const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanQ)}&sp=EgIQAw%253D%253D`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(4500),
+    });
+    if (res.ok) {
+      const html = await res.text();
+      const m = html.match(/var ytInitialData = (\{.+?\});<\/script>/);
+      if (m) {
+        const json = JSON.parse(m[1]);
+        const contents = json.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents?.[0]?.itemSectionRenderer?.contents;
+        if (Array.isArray(contents)) {
+          for (const item of contents) {
+            const vm = item.lockupViewModel;
+            if (!vm || !vm.contentId) continue;
+            const id = vm.contentId;
+            if (map.has(id)) continue;
+
+            const title = vm.metadata?.lockupMetadataViewModel?.title?.content || 'Community Playlist';
+            const byline = vm.metadata?.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]?.text?.content || 'YouTube Music';
+            const thumb = vm.contentImage?.collectionThumbnailViewModel?.primaryThumbnail?.thumbnailViewModel?.image?.sources?.[0]?.url || `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+
+            // Extract video count from metadata
+            let count: number | undefined = undefined;
+            const metaParts = vm.metadata?.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows;
+            if (Array.isArray(metaParts)) {
+              for (const row of metaParts) {
+                for (const part of row.metadataParts || []) {
+                  const text = part.text?.content || '';
+                  const numMatch = text.match(/(\d+)\s*(?:videos|songs|tracks)/i);
+                  if (numMatch) {
+                    count = parseInt(numMatch[1], 10);
+                    break;
+                  }
+                }
+                if (count) break;
+              }
+            }
+
+            map.set(id, {
+              id,
+              title,
+              author: byline,
+              thumbnail: thumb,
+              videoCount: count,
+              url: `https://youtube.com/playlist?list=${id}`,
+            });
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('YouTube direct playlist search error:', err);
+  }
+
+  return Array.from(map.values());
+}
+
+export async function fetchCommunityPlaylistTracksInternal(playlistId: string): Promise<{
+  playlist: CommunityPlaylistResult;
+  tracks: SongTrack[];
+}> {
+  const url = `https://www.youtube.com/playlist?list=${playlistId}`;
+  const fallbackPlaylist: CommunityPlaylistResult = {
+    id: playlistId,
+    title: 'Community Playlist',
+    author: 'YouTube Music',
+    thumbnail: `https://i.ytimg.com/vi/${playlistId}/hqdefault.jpg`,
+    url,
+  };
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!res.ok) {
+      return { playlist: fallbackPlaylist, tracks: [] };
+    }
+
+    const html = await res.text();
+    const m = html.match(/var ytInitialData = (\{.+?\});<\/script>/);
+    if (!m) {
+      return { playlist: fallbackPlaylist, tracks: [] };
+    }
+
+    const json = JSON.parse(m[1]);
+    const header = json.header?.playlistHeaderRenderer || json.header?.pageHeaderRenderer;
+    const plTitle = header?.title?.simpleText || header?.pageTitle || fallbackPlaylist.title;
+    const plOwner = header?.ownerText?.runs?.[0]?.text || fallbackPlaylist.author;
+    const plThumb = header?.playlistHeaderBanner?.sources?.[0]?.url || fallbackPlaylist.thumbnail;
+
+    const playlistInfo: CommunityPlaylistResult = {
+      id: playlistId,
+      title: plTitle,
+      author: plOwner,
+      thumbnail: plThumb,
+      url,
+    };
+
+    const sec = json.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.sectionListRenderer?.contents?.[0]?.itemSectionRenderer?.contents;
+    const tracks: SongTrack[] = [];
+    const seenIds = new Set<string>();
+
+    if (Array.isArray(sec)) {
+      for (const item of sec) {
+        const vm = item.lockupViewModel;
+        if (!vm || !vm.contentId) continue;
+        const videoId = vm.contentId;
+        if (seenIds.has(videoId)) continue;
+
+        const rawTitle = vm.metadata?.lockupMetadataViewModel?.title?.content || 'YouTube Track';
+        const title = cleanTrackTitle(rawTitle);
+
+        const thumbs = vm.contentImage?.thumbnailViewModel?.image?.sources || [];
+        const artworkUrl = thumbs[thumbs.length - 1]?.url || thumbs[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+        const overlays = vm.contentImage?.thumbnailViewModel?.overlays || [];
+        let durationText = '3:30';
+        for (const ov of overlays) {
+          const t = ov.thumbnailOverlayTimeStatusViewModel?.text;
+          if (t) {
+            durationText = t;
+            break;
+          }
+        }
+        const parts = durationText.split(':').map(Number);
+        let secCount = 210;
+        if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+          secCount = parts[0] * 60 + parts[1];
+        } else if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+          secCount = parts[0] * 3600 + parts[1] * 60 + parts[2];
+        }
+
+        if (secCount < 45 || rawTitle.toLowerCase().includes('#shorts')) {
+          continue;
+        }
+
+        seenIds.add(videoId);
+        tracks.push({
+          id: `yt-${videoId}`,
+          title,
+          artist: plOwner || 'YouTube Music',
+          album: plTitle,
+          duration: secCount,
+          audioUrl: `https://www.youtube.com/watch?v=${videoId}`,
+          youtubeVideoId: videoId,
+          artworkUrl,
+          source: 'youtube',
+          requestedBy: '',
+          addedAt: Date.now(),
+          priority: 'staff_normal',
+          isOfficial: true,
+        });
+      }
+    }
+
+    // Older format fallback
+    if (tracks.length === 0) {
+      const altSec = json.contents?.twoColumnBrowseResultsRenderer?.tabs?.[0]?.tabRenderer?.content?.sectionListRenderer?.contents?.[0]?.itemSectionRenderer?.contents?.[0]?.playlistVideoListRenderer?.contents;
+      if (Array.isArray(altSec)) {
+        for (const item of altSec) {
+          const pvr = item.playlistVideoRenderer;
+          if (!pvr || !pvr.videoId) continue;
+          const videoId = pvr.videoId;
+          if (seenIds.has(videoId)) continue;
+
+          const rawTitle = pvr.title?.runs?.[0]?.text || pvr.title?.simpleText || 'YouTube Track';
+          const title = cleanTrackTitle(rawTitle);
+          const author = pvr.shortBylineText?.runs?.[0]?.text || plOwner || 'YouTube Music';
+          const secCount = parseInt(pvr.lengthSeconds || '210', 10);
+          const artworkUrl = pvr.thumbnail?.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+          if (secCount < 45 || rawTitle.toLowerCase().includes('#shorts')) continue;
+
+          seenIds.add(videoId);
+          tracks.push({
+            id: `yt-${videoId}`,
+            title,
+            artist: author,
+            album: plTitle,
+            duration: secCount,
+            audioUrl: `https://www.youtube.com/watch?v=${videoId}`,
+            youtubeVideoId: videoId,
+            artworkUrl,
+            source: 'youtube',
+            requestedBy: '',
+            addedAt: Date.now(),
+            priority: 'staff_normal',
+            isOfficial: true,
+          });
+        }
+      }
+    }
+
+    playlistInfo.videoCount = tracks.length;
+    return { playlist: playlistInfo, tracks };
+  } catch (err) {
+    console.warn('Error parsing playlist tracks:', err);
+    return { playlist: fallbackPlaylist, tracks: [] };
+  }
+}
+
+// 4. YouTube Community Playlists Search Endpoint (Matches YouTube "Community playlists" button)
+app.get('/api/music/playlists/search', async (req, res) => {
+  const query = (req.query.q as string || '').trim();
+  if (!query) {
+    return res.json({ success: true, playlists: [] });
+  }
+
+  try {
+    const playlists = await searchCommunityPlaylistsInternal(query);
+    res.json({ success: true, playlists, count: playlists.length });
+  } catch (err) {
+    console.warn('Playlist search error:', err);
+    res.json({ success: false, playlists: [], error: 'Failed to search community playlists' });
+  }
+});
+
+// 5. YouTube Community Playlist Tracks Endpoint
+app.get('/api/music/playlists/:id/tracks', async (req, res) => {
+  const playlistId = (req.params.id || '').trim();
+  if (!playlistId) {
+    return res.json({ success: false, tracks: [], error: 'Missing playlist ID' });
+  }
+
+  try {
+    const result = await fetchCommunityPlaylistTracksInternal(playlistId);
+    res.json({
+      success: true,
+      playlist: result.playlist,
+      tracks: result.tracks,
+      count: result.tracks.length,
+    });
+  } catch (err) {
+    console.warn('Playlist tracks fetch error:', err);
+    res.json({ success: false, tracks: [], error: 'Failed to load playlist tracks' });
+  }
 });
 
 // AI Smart Music Discovery with Google Search Grounding (gemini-3.8-flash)

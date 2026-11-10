@@ -1023,6 +1023,51 @@ export const MobileSettingsView: React.FC<MobileSettingsViewProps> = ({
         </div>
       </div>
 
+      {/* 3B. SECTION: BACKGROUND PLAYBACK & LOCK-SCREEN CONTROLLER */}
+      <div className="mb-6">
+        <div className="px-1 pb-2 flex items-center justify-between">
+          <span className="text-xs font-semibold text-[#86868b] uppercase tracking-wider">
+            Background Playback & Lock-Screen
+          </span>
+          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#30d158]/15 text-[#30d158] border border-[#30d158]/30">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#30d158] animate-pulse" />
+            <span>Active & Protected</span>
+          </span>
+        </div>
+
+        <div className="rounded-2xl bg-[#1c1c1e] border border-white/[0.08] overflow-hidden p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#30d158]/20 to-[#0a84ff]/20 border border-white/10 flex items-center justify-center shrink-0">
+              <Zap className="w-5 h-5 text-[#30d158]" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-white">Continuous Background Music</h4>
+                <CheckCircle2 className="w-4 h-4 text-[#30d158]" />
+              </div>
+              <p className="text-xs text-[#86868b] mt-1 leading-relaxed">
+                Phone minimize karne par ya screen band hone par gaana bina ruke bajta rahega (Recent Apps me tab open rehna chahiye).
+              </p>
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-white/[0.06] grid grid-cols-2 gap-2 text-[11px]">
+            <div className="p-2 rounded-xl bg-black/40 border border-white/[0.04] space-y-0.5">
+              <span className="text-white font-medium flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#30d158]" /> Lockscreen Controls
+              </span>
+              <p className="text-[10px] text-[#86868b]">Notification bar & lockscreen se Play/Pause/Skip bina phone kholiye karein.</p>
+            </div>
+            <div className="p-2 rounded-xl bg-black/40 border border-white/[0.04] space-y-0.5">
+              <span className="text-white font-medium flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#0a84ff]" /> Pocket Auto-Skip
+              </span>
+              <p className="text-[10px] text-[#86868b]">Song khatam hote hi agla gaana queue se automatically continuous start hoga.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* 4. SECTION: LIVE ANNOUNCEMENTS & FORECOURT PA */}
       <div className="mb-6">
         <div className="px-1 pb-2 flex items-center justify-between">

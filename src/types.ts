@@ -8,6 +8,8 @@ export interface SongTrack {
   artworkUrl?: string;
   source: 'online' | 'local_upload' | 'youtube' | 'jiosaavn';
   youtubeVideoId?: string;
+  directAudioUrl?: string;
+  isBackgroundOptimized?: boolean;
   requestedBy: string;
   addedAt: number;
   priority: 'admin_instant' | 'admin_high' | 'staff_normal' | 'auto_recommend';
@@ -60,6 +62,7 @@ export interface StationItem {
   crossfadeSeconds?: number;
   loopMode?: 'none' | 'all' | 'one';
   isShuffleEnabled?: boolean;
+  backgroundPlaybackEnabled?: boolean;
 }
 
 export interface HandoverRequest {
@@ -92,6 +95,7 @@ export interface StationSettings {
   masterVolume?: number; // 0 to 100%
   loopMode?: 'none' | 'all' | 'one';
   isShuffleEnabled?: boolean;
+  backgroundPlaybackEnabled?: boolean;
 }
 
 export interface StationState {
@@ -141,4 +145,13 @@ export interface ConnectedDevice {
   isSpeaker: boolean;
   joinedAt: number;
   lastSeen: number;
+}
+
+export interface CommunityPlaylist {
+  id: string; // YouTube listId (e.g., PL...)
+  title: string;
+  author: string;
+  thumbnail: string;
+  videoCount?: number;
+  url: string;
 }
